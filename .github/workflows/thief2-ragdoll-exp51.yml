@@ -3,6 +3,9 @@
 # approved historical engine/iOS source scope. No retail/reference material.
 name: Thief2 Ragdoll EXP 51 private SDK build
 on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/thief2-ragdoll-exp51.yml']
   workflow_dispatch:
     inputs:
       source_asset_id:
