@@ -1,0 +1,167 @@
+# Approved dedicated private destination; numeric repository identity verified.
+# Transfer is restricted to the specifically
+# approved historical engine/iOS source scope. No retail/reference material.
+name: Thief2 private Apple SDK compile phase50
+on:
+  workflow_dispatch:
+    inputs:
+      source_asset_id:
+        description: ID of the approved private source ZIP asset, never retail/reference data
+        required: false
+        type: string
+        default: auto
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: thief2-private-sdk-exclusive
+  cancel-in-progress: false
+jobs:
+  compile:
+    if: github.repository == 'arjuk7/Thief2-iOS-Private' && github.event.repository.private == true
+    runs-on: macos-26-intel
+    timeout-minutes: 30
+    permissions:
+      # Draft release assets require write-level visibility. The download step
+      # below performs GET requests only; its token is not passed to the build.
+      contents: write
+      actions: read
+    env:
+      EXPECTED_REPO: arjuk7/Thief2-iOS-Private
+      EXPECTED_REPO_ID: '1459774464'
+      SOURCE_SHA256: 89BD1EF9662AAABC16E125D967078CB613CD9F82E9D6DEEE60A9E5E30A5AE0B6
+      SOURCE_BYTES: '8172717'
+      SOURCE_BASE: e876a44c69d725584dba8bb44ae8141c4998d866
+    steps:
+      - name: Verify private destination, exclusive run and exact input
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_ASSET_ID: ${{ inputs.source_asset_id }}
+        shell: python
+        run: |
+          import hashlib,json,os,pathlib,stat,subprocess,zipfile
+          repo=os.environ['EXPECTED_REPO']
+          def api(path):
+              return json.loads(subprocess.check_output(['gh','api',path]))
+          meta=api(f'repos/{repo}')
+          assert meta['owner']['login']=='arjuk7' and meta['owner']['id']==357277067
+          assert meta['private'] and str(meta['id'])==os.environ['EXPECTED_REPO_ID']
+          assert meta['full_name']==os.environ['GITHUB_REPOSITORY']==repo
+          for status in ['queued','in_progress','waiting','pending','requested']:
+              page=1
+              while True:
+                  runs=api(f'repos/{repo}/actions/runs?status={status}&per_page=100&page={page}')['workflow_runs']
+                  assert not [r for r in runs if str(r['id'])!=os.environ['GITHUB_RUN_ID']], 'Another repository job is active'
+                  if len(runs)<100: break
+                  page+=1
+          asset_id=os.environ.get('SOURCE_ASSET_ID','auto')
+          if asset_id in ['', 'auto']:
+              releases=api(f'repos/{repo}/releases?per_page=100')
+              sources=[r for r in releases if r['name']=='Private Thief II iOS source phase50' and r['draft']]
+              assert len(sources)==1, 'Expected one private draft source release'
+              assets=[a for a in sources[0]['assets'] if a['name']=='thief2-ios-source-phase50.zip']
+              assert len(assets)==1, 'Expected one exact source-only archive'
+              asset_id=str(assets[0]['id'])
+          assert asset_id.isdecimal() and 0<int(asset_id)<2**63
+          asset=api(f'repos/{repo}/releases/assets/{asset_id}')
+          expected=os.environ['SOURCE_SHA256'].lower()
+          assert asset['name']=='thief2-ios-source-phase50.zip' and asset['state']=='uploaded'
+          assert asset['size']==int(os.environ['SOURCE_BYTES']) and asset['digest']=='sha256:'+expected
+          data=subprocess.check_output(['gh','api','-H','Accept: application/octet-stream',f'repos/{repo}/releases/assets/{asset_id}'])
+          assert len(data)==int(os.environ['SOURCE_BYTES']) and hashlib.sha256(data).hexdigest()==expected
+          archive=pathlib.Path(os.environ['RUNNER_TEMP'])/'thief2-source-phase50.zip'
+          archive.write_bytes(data)
+          root=pathlib.Path(os.environ['RUNNER_TEMP'])/'thief2-source'
+          assert not root.exists()
+          with zipfile.ZipFile(archive) as z:
+              names=z.namelist()
+              assert len(names)==len(set(names))==4542
+              assert sum(i.file_size for i in z.infolist())<512*1024**2
+              manifest=json.loads(z.read('PRIVATE-SOURCE-MANIFEST.json'))
+              assert manifest['base']==os.environ['SOURCE_BASE']
+              assert not manifest['retail_assets'] and not manifest['reference_binaries'] and not manifest['credentials']
+              entries={f['path']:f for f in manifest['files']}
+              assert len(entries)==4541 and set(names)==set(entries)|{'PRIVATE-SOURCE-MANIFEST.json'}
+              for info in z.infolist():
+                  path=pathlib.PurePosixPath(info.filename)
+                  assert not path.is_absolute() and '..' not in path.parts and '\\' not in info.filename and ':' not in info.filename
+                  assert not stat.S_ISLNK(info.external_attr>>16)
+                  content=z.read(info)
+                  if info.filename in entries:
+                      f=entries[info.filename]
+                      assert len(content)==f['bytes'] and hashlib.sha256(content).hexdigest()==f['sha256'].lower()
+                  target=root.joinpath(*path.parts)
+                  target.parent.mkdir(parents=True,exist_ok=True)
+                  target.write_bytes(content)
+          print('Private destination and exact source-only archive verified; no retail inputs used.')
+      - name: Check selected Apple SDK before fetching public dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/thief2-results"
+          cd "$RUNNER_TEMP/thief2-source"
+          sh tools/ios_build.sh doctor 2>&1 | tee "$RUNNER_TEMP/thief2-results/sdk.txt"
+          command -v ninja
+          ninja --version | tee -a "$RUNNER_TEMP/thief2-results/sdk.txt"
+      - name: Verify changed native ABI and restored engine packing
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/thief2-source"
+          probe_status=0
+          xcrun --sdk iphoneos clang++ -arch arm64 -miphoneos-version-min=15.0 \
+            -std=c++17 -fpack-struct=1 -DDARK_IOS=1 -I"$PWD/h" -fsyntax-only \
+            tools/ios_host_tests/native_stat_abi_probe.cpp > "$RUNNER_TEMP/thief2-results/stat-abi.txt" 2>&1 || probe_status=$?
+          cat "$RUNNER_TEMP/thief2-results/stat-abi.txt"
+          if [ "$probe_status" -ne 0 ]; then exit "$probe_status"; fi
+          echo "PASS: native stat size/alignment/offset and restored engine packing" | tee -a "$RUNNER_TEMP/thief2-results/stat-abi.txt"
+      - name: Prepare public dependencies and compile exactly one unsigned device target
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/thief2-source"
+          sh tools/ios_build.sh prepare 2>&1 | tee "$RUNNER_TEMP/thief2-results/dependencies.txt"
+          deps="$PWD/.codex-build/ios-deps"
+          apple_cc=$(xcrun --sdk iphoneos --find clang)
+          apple_cxx=$(xcrun --sdk iphoneos --find clang++)
+          # Same source/SDK settings; Ninja avoids Xcode's per-probe project overhead.
+          cmake -S . -B .codex-build/ios-device -G Ninja \
+            -DCMAKE_BUILD_TYPE=RelWithDebInfo -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
+            -DCMAKE_SYSTEM_NAME=iOS -DCMAKE_OSX_SYSROOT=iphoneos \
+            "-DCMAKE_C_COMPILER=$apple_cc" "-DCMAKE_CXX_COMPILER=$apple_cxx" \
+            "-DCMAKE_OBJC_COMPILER=$apple_cc" "-DCMAKE_OBJCXX_COMPILER=$apple_cxx" \
+            -DCMAKE_OSX_ARCHITECTURES=arm64 -DCMAKE_OSX_DEPLOYMENT_TARGET=15.0 \
+            -DCMAKE_XCODE_ATTRIBUTE_CODE_SIGNING_ALLOWED=NO \
+            -DDARK_BUILD_ENGINE=ON -DDARK_BUILD_THIEF2=ON \
+            "-DDARK_SDL2_SOURCE=$deps/SDL2" "-DDARK_OPENAL_SOFT_SOURCE=$deps/openal-soft" \
+            "-DDARK_PNG_SOURCE=$deps/libpng" "-DDARK_OGG_SOURCE=$deps/ogg" \
+            "-DDARK_VORBIS_SOURCE=$deps/vorbis" "-DDARK_SQUIRREL_SOURCE=$deps/squirrel" \
+            2>&1 | tee "$RUNNER_TEMP/thief2-results/configure.txt"
+          # Retain complete private diagnostics; bound the browser-visible log.
+          build_status=0
+          cmake --build .codex-build/ios-device --config RelWithDebInfo --target thief2 --parallel 2 > "$RUNNER_TEMP/thief2-results/compile.txt" 2>&1 || build_status=$?
+          tail -n 600 "$RUNNER_TEMP/thief2-results/compile.txt"
+          if [ "$build_status" -ne 0 ]; then exit "$build_status"; fi
+          app="$PWD/.codex-build/ios-device/Thief2.app"
+          test -d "$app"
+          xcrun --sdk iphoneos lipo "$app/Thief2" -verify_arch arm64
+          # Ninja uses our authored plist; supply the device fields Xcode adds.
+          python3 - "$app/Info.plist" <<'PY'
+          import pathlib,plistlib,sys
+          path=pathlib.Path(sys.argv[1])
+          data=plistlib.loads(path.read_bytes())
+          data.update({'MinimumOSVersion':'15.0','CFBundleVersion':'50','CFBundleShortVersionString':'0.2.1','UIDeviceFamily':[1,2],'CFBundleSupportedPlatforms':['iPhoneOS']})
+          path.write_bytes(plistlib.dumps(data))
+          PY
+          mkdir -p "$RUNNER_TEMP/thief2-package/Payload"
+          ditto "$app" "$RUNNER_TEMP/thief2-package/Payload/Thief2.app"
+          ditto -c -k --keepParent "$RUNNER_TEMP/thief2-package/Payload" "$RUNNER_TEMP/thief2-results/Thief2-unsigned.ipa"
+          shasum -a 256 "$RUNNER_TEMP/thief2-results/Thief2-unsigned.ipa" > "$RUNNER_TEMP/thief2-results/SHA256SUMS.txt"
+      - name: Preserve private compiler evidence only
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Thief2-private-sdk-phase50
+          path: ${{ runner.temp }}/thief2-results
+          retention-days: 1
+          if-no-files-found: warn
