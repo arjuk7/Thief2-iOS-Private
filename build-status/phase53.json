@@ -7,5 +7,12 @@
   "head_sha": "83d608f21ec1234da257690337e9e3f415e84986",
   "source_commit": "6f0fe7c",
   "source_patch_sha256": "46fd4fb80de2a9630ab45e518bec7b1deb8a3fc06deeae4a003254366ee50987",
-  "artifacts": []
+  "artifacts": [
+    {
+      "id": 14304816167,
+      "name": "Thief2-phase53",
+      "size_in_bytes": 4697187,
+      "expired": false
+    }
+  ]
 }
