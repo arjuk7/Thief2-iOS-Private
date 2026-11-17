@@ -1,0 +1,39 @@
+name: Thief2 phase52 private status observer
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/thief2-phase52-status.yml']
+  workflow_run:
+    workflows: ['Thief2 phase52 controls and lighting private SDK build']
+    types: [completed]
+permissions:
+  contents: write
+  actions: read
+jobs:
+  receipt:
+    if: github.repository == 'arjuk7/Thief2-iOS-Private' && github.event.repository.private == true
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Record private phase52 run and artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: python
+        run: |
+          import base64,json,subprocess
+          repo='arjuk7/Thief2-iOS-Private'
+          def api(p): return json.loads(subprocess.check_output(['gh','api',p]))
+          meta=api('repos/'+repo)
+          assert meta['private'] and meta['id']==1459774464
+          runs=api('repos/'+repo+'/actions/workflows/thief2-phase52.yml/runs?per_page=100')['workflow_runs']
+          runs=[r for r in runs if r['head_sha']=='012a55a64aecca2c0d48c22567b0653fd721ef04']
+          assert len(runs)==1, 'Expected exactly one phase52 compile run'
+          r=runs[0]
+          artifacts=api('repos/'+repo+'/actions/runs/'+str(r['id'])+'/artifacts')['artifacts']
+          receipt={'run_id':r['id'],'run_url':r['html_url'],'status':r['status'],'conclusion':r['conclusion'],'head_sha':r['head_sha'],'source_commit':'e3af3bc','source_patch_sha256':'91622a9bcd5cb41dc753d6fb81f9447d69dac2b5880ea0a42e893b5ee82d45c6','artifacts':[{'id':a['id'],'name':a['name'],'size_in_bytes':a['size_in_bytes'],'expired':a['expired']} for a in artifacts]}
+          path='repos/'+repo+'/contents/build-status/phase52.json'
+          existing=subprocess.run(['gh','api',path],capture_output=True,text=True)
+          body={'message':'Record phase52 build status','content':base64.b64encode((json.dumps(receipt,indent=2)+'\n').encode()).decode(),'branch':'main'}
+          if existing.returncode==0: body['sha']=json.loads(existing.stdout)['sha']
+          subprocess.run(['gh','api','--method','PUT',path,'--input','-'],input=json.dumps(body),text=True,check=True,stdout=subprocess.DEVNULL)
+          print(json.dumps(receipt))
